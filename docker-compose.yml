@@ -1,0 +1,13 @@
+services:
+  claudedash:
+    build: .
+    ports:
+      - "3003:3000"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    environment:
+      - POLL_INTERVAL=60
+      - DB_PATH=/app/data/usage.db
+    restart: unless-stopped
