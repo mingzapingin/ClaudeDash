@@ -8,6 +8,9 @@ services:
     volumes:
       - ./data:/app/data
     environment:
-      - POLL_INTERVAL=60
+      # POLL_INTERVAL seeds the initial poll interval (seconds) on first run only.
+      # After that, change it live from the Settings panel — it's stored in SQLite.
+      # Minimum enforced server-side is 60s.
+      - POLL_INTERVAL=180
       - DB_PATH=/app/data/usage.db
     restart: unless-stopped

@@ -954,11 +954,29 @@ main {
         <div class="settings-row">
           <div class="settings-label-group">
             <p class="settings-label">Poll Interval</p>
-            <p class="settings-hint">Configured server-side via POLL_INTERVAL env var</p>
+            <p class="settings-hint" id="interval-hint">How often the server checks Claude.ai. Minimum 1 minute to avoid rate limits.</p>
           </div>
-          <span class="badge badge-ok">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
-            60 seconds
+          <div>
+            <label for="poll-interval-select" class="sr-only">Poll interval</label>
+            <select class="form-select" id="poll-interval-select">
+              <option value="60">Every 1 minute</option>
+              <option value="120">Every 2 minutes</option>
+              <option value="180" selected>Every 3 minutes</option>
+              <option value="300">Every 5 minutes</option>
+              <option value="600">Every 10 minutes</option>
+              <option value="900">Every 15 minutes</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="settings-row" id="backoff-row" hidden>
+          <div class="settings-label-group">
+            <p class="settings-label">Auto Backoff</p>
+            <p class="settings-hint" id="backoff-hint">The server slowed polling after a rate-limit or auth error. It will recover automatically on the next success.</p>
+          </div>
+          <span class="badge badge-warning">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            Backed off
           </span>
         </div>
 
@@ -1200,12 +1218,16 @@ function updateCard(cardId, pctId, barId, barLabelId, progressId, resetId, pct, 
 
 // ── Set connection status ─────────────────────────────────────────────────────
 function setStatus(state, text, pollText) {
-  ['sidebar-dot','footer-dot'].forEach(id => {
-    document.getElementById(id).dataset.state = state;
-  });
-  document.getElementById('sidebar-status-text').textContent = text;
+  if (state !== undefined) {
+    ['sidebar-dot','footer-dot'].forEach(id => {
+      document.getElementById(id).dataset.state = state;
+    });
+  }
+  if (text !== undefined) {
+    document.getElementById('sidebar-status-text').textContent = text;
+    document.getElementById('footer-status-text').textContent = text;
+  }
   if (pollText) document.getElementById('sidebar-poll-text').textContent = pollText;
-  document.getElementById('footer-status-text').textContent = text;
 }
 
 // ── Fetch current usage ───────────────────────────────────────────────────────
@@ -1307,8 +1329,10 @@ async function loadHistory(hours, btn) {
 // ── Refresh buttons ───────────────────────────────────────────────────────────
 async function doRefresh() {
   setStatus('loading', 'Refreshing…', '');
+  try { await fetch('/api/poll-now', { method: 'POST' }); } catch(e) {}
   await fetchUsage();
   await loadHistory(currentHours, null);
+  loadPollSettings();
 }
 
 document.getElementById('refresh-btn').addEventListener('click', doRefresh);
@@ -1331,6 +1355,55 @@ rangeSelect.addEventListener('change', () => {
   loadHistory(hours, matchingTab);
 });
 
+// ── Poll interval setting (live) ──────────────────────────────────────────────
+const intervalSelect = document.getElementById('poll-interval-select');
+const intervalHint   = document.getElementById('interval-hint');
+const backoffRow     = document.getElementById('backoff-row');
+
+function describePoll(s) {
+  return s % 60 === 0 ? `${s/60} minute${s/60 === 1 ? '' : 's'}` : `${s} seconds`;
+}
+
+async function loadPollSettings() {
+  try {
+    const s = await fetch('/api/settings').then(r => r.json());
+    // Reflect the configured base interval in the dropdown
+    if (intervalSelect.value !== String(s.interval)) {
+      intervalSelect.value = String(s.interval);
+    }
+    // Show backoff state
+    backoffRow.hidden = !s.backoff;
+    if (s.backoff) {
+      intervalHint.textContent =
+        `Configured for every ${describePoll(s.interval)}, but temporarily slowed to ${describePoll(s.effective)} after an error.`;
+      setStatus(undefined, undefined, `Backed off · polling every ${describePoll(s.effective)}`);
+    } else {
+      intervalHint.textContent =
+        `Checking Claude.ai every ${describePoll(s.interval)}. Minimum 1 minute to avoid rate limits.`;
+    }
+  } catch(e) { /* leave defaults */ }
+}
+
+intervalSelect.addEventListener('change', async () => {
+  const interval = parseInt(intervalSelect.value, 10);
+  intervalSelect.disabled = true;
+  try {
+    const res = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ interval })
+    }).then(r => r.json());
+    intervalHint.textContent =
+      `Checking Claude.ai every ${describePoll(res.interval)}. Minimum 1 minute to avoid rate limits.`;
+    // reflect server poll cadence in the sidebar status text
+    document.getElementById('sidebar-poll-text').textContent = `Polling every ${describePoll(res.interval)}`;
+  } catch(e) {
+    intervalHint.textContent = 'Could not update interval — check the server connection.';
+  } finally {
+    intervalSelect.disabled = false;
+  }
+});
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 const initialHours = parseInt(rangeSelect.value, 10) || 24;
 const initialTab = document.querySelector(`.tab-btn[data-hours="${initialHours}"]`)
@@ -1338,9 +1411,11 @@ const initialTab = document.querySelector(`.tab-btn[data-hours="${initialHours}"
 
 fetchUsage();
 loadHistory(initialHours, initialTab);
+loadPollSettings();
 
 setInterval(fetchUsage, 10_000);
 setInterval(() => loadHistory(currentHours, null), 60_000);
+setInterval(loadPollSettings, 30_000);  // keep interval/backoff display in sync
 </script>
 </body>
 </html>

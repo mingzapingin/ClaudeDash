@@ -13,8 +13,11 @@ Polls the claude.ai internal API every 60 seconds and displays your 5-hour sessi
 - **Color-coded alerts** — green → yellow → red as you approach limits
 - **Reset countdowns** — exact time until each window resets
 - **History graph** — view usage over 3h, 6h, 24h, or 7 days
-- **SQLite persistence** — history survives container restarts
+- **Adjustable poll interval** — change how often the server checks Claude.ai, live from the Settings panel (1–15 min), no restart needed
+- **Rate-limit safe** — 60-second minimum floor, randomized jitter, and automatic backoff if Claude.ai returns an auth or rate-limit error
+- **SQLite persistence** — history *and* your interval setting survive container restarts
 - **Lightweight** — ~150 MB Docker image, no browser automation needed
+- **Accessible** — WCAG 2.2 AAA oriented, full keyboard navigation, screen-reader summaries
 - **LAN accessible** — open on any phone, tablet, or laptop on your network
 
 ---
@@ -24,8 +27,8 @@ Polls the claude.ai internal API every 60 seconds and displays your 5-hour sessi
 Claude.ai is a React app that fetches usage data from an internal API endpoint. ClaudeDash calls that same endpoint using your session cookies, caches the result, and serves it as a clean dashboard.
 
 ```
-Every 60 seconds:
-  POST https://claude.ai/api/organizations/{org_id}/usage
+Every N minutes (default 3, configurable):
+  GET https://claude.ai/api/organizations/{org_id}/usage
        ↓
   { five_hour: { utilization: 41.0, resets_at: "..." },
     seven_day:  { utilization: 12.0, resets_at: "..." } }
@@ -34,6 +37,17 @@ Every 60 seconds:
 ```
 
 No Playwright, no headless browser, no Anthropic API key needed.
+
+### Polling & rate-limit safety
+
+ClaudeDash is deliberately conservative about how often it calls Claude.ai:
+
+- **Default interval is 3 minutes.** Usage numbers don't move fast, so frequent polling buys nothing.
+- **Hard floor of 60 seconds.** The server clamps any requested interval so it can never poll faster than once a minute, even if you edit the value directly.
+- **Jitter.** Each poll fires at the interval ± a few seconds of random offset, so requests don't arrive in perfect clockwork (which looks more automated).
+- **Automatic backoff.** If Claude.ai responds with 401, 403, or 429, the server doubles its interval (up to a 30-minute cap) instead of retrying aggressively, then automatically returns to your configured interval on the next successful poll. The dashboard shows a "Backed off" badge while this is active.
+
+You can change the interval any time from **Settings → Poll Interval**; the choice is saved to SQLite and applied immediately.
 
 ---
 
@@ -120,21 +134,26 @@ ClaudeDash/
 
 | Variable | Default | Description |
 |---|---|---|
-| `POLL_INTERVAL` | `60` | Seconds between API polls |
-| `DB_PATH` | `/app/data/usage.db` | SQLite database path |
+| `POLL_INTERVAL` | `180` | **Initial** poll interval in seconds, used only the first time the database is created. After that, change it from the Settings panel. Clamped to a 60s minimum. |
+| `DB_PATH` | `/app/data/usage.db` | SQLite database path (mounted volume for persistence) |
 
-Change `POLL_INTERVAL` in `docker-compose.yml`:
+The poll interval is stored in SQLite once set, so editing `POLL_INTERVAL` in `docker-compose.yml` after first run has no effect — use the UI instead.
 
-```yaml
-environment:
-  - POLL_INTERVAL=60
-```
+### API endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/usage` | Latest cached usage reading |
+| `GET` | `/api/history?hours=N` | Usage history for the last N hours |
+| `GET` | `/api/settings` | Current interval, effective interval, backoff state |
+| `POST` | `/api/settings` | Set the poll interval (`{ "interval": 180 }`) |
+| `POST` | `/api/poll-now` | Trigger an immediate poll |
 
 ---
 
 ## Updating Cookies
 
-Session cookies expire every few weeks. When the dashboard shows an auth error:
+Session cookies expire every few weeks. When the dashboard shows an auth error (or the "Backed off" badge appears and stays):
 
 1. Re-open Chrome → F12 → Application → Cookies → claude.ai
 2. Copy the new `sessionKey` and `cf_clearance` values
