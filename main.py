@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 load_dotenv()
 
-DB_PATH = "usage.db"
+DB_PATH = os.getenv("DB_PATH", "usage.db")
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "60"))
 
 # ── DB setup ──────────────────────────────────────────────────────────────────
@@ -46,10 +46,13 @@ def insert_record(five_hour, seven_day, fh_resets, sd_resets):
 
 def get_history(hours: int = 24):
     con = sqlite3.connect(DB_PATH)
+    # datetime(ts) normalizes the stored ISO 8601 string (with 'T' separator and
+    # timezone offset) into SQLite's comparable format. Without this wrapper the
+    # comparison is a raw string compare and the time filter does not work.
     rows = con.execute(
         """SELECT ts, five_hour, seven_day FROM usage_history
-           WHERE ts >= datetime('now', ?)
-           ORDER BY ts ASC""",
+           WHERE datetime(ts) >= datetime('now', ?)
+           ORDER BY datetime(ts) ASC""",
         (f"-{hours} hours",),
     ).fetchall()
     con.close()
