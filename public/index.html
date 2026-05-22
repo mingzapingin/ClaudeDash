@@ -781,7 +781,7 @@ main {
       <span class="status-dot" id="sidebar-dot" data-state="loading" aria-hidden="true"></span>
       <div class="status-label">
         <strong id="sidebar-status-text">Connecting…</strong>
-        <span id="sidebar-poll-text">Polling every 60s</span>
+        <span id="sidebar-poll-text">Polling every 3 minutes</span>
       </div>
     </div>
   </div>
@@ -1022,6 +1022,9 @@ main {
 let lastData = null;
 let resetTimers = { fh: null, sd: null };
 let currentHours = 3;
+let pollInterval = 180;       // configured base interval (seconds), kept in sync with server
+let pollEffective = 180;      // current effective interval incl. backoff (seconds)
+let pollBackoff = false;      // whether the server is currently backed off
 
 // ── Mobile nav ───────────────────────────────────────────────────────────────
 const menuBtn     = document.getElementById('menu-btn');
@@ -1258,7 +1261,10 @@ async function fetchUsage() {
       warningAlert.hidden = true;
     }
 
-    setStatus('ok', 'Connected', 'Polling every 60s');
+    const pollText = pollBackoff
+      ? `Backed off · every ${describePoll(pollEffective)}`
+      : `Polling every ${describePoll(pollInterval)}`;
+    setStatus('ok', 'Connected', pollText);
 
     const updEl = document.getElementById('last-updated-text');
     updEl.textContent = `Updated ${formatTime(data.last_updated)}`;
@@ -1278,9 +1284,17 @@ async function fetchUsage() {
 async function loadHistory(hours, btn) {
   currentHours = hours;
 
+  // Keep both controls in sync regardless of which one triggered the change
   document.querySelectorAll('.tab-btn').forEach(t => {
     t.setAttribute('aria-selected', t.dataset.hours === String(hours) ? 'true' : 'false');
   });
+  const rangeSel = document.getElementById('default-range');
+  if (rangeSel && rangeSel.value !== String(hours)) {
+    // Only sync if this range exists as an option in the dropdown
+    if ([...rangeSel.options].some(o => o.value === String(hours))) {
+      rangeSel.value = String(hours);
+    }
+  }
 
   try {
     const rows = await fetch(`/api/history?hours=${hours}`).then(r => r.json());
@@ -1367,6 +1381,10 @@ function describePoll(s) {
 async function loadPollSettings() {
   try {
     const s = await fetch('/api/settings').then(r => r.json());
+    // Keep shared state in sync so fetchUsage shows the right cadence
+    pollInterval  = s.interval;
+    pollEffective = s.effective;
+    pollBackoff   = s.backoff;
     // Reflect the configured base interval in the dropdown
     if (intervalSelect.value !== String(s.interval)) {
       intervalSelect.value = String(s.interval);
@@ -1393,6 +1411,11 @@ intervalSelect.addEventListener('change', async () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ interval })
     }).then(r => r.json());
+    // Update shared state immediately so the sidebar reflects the change at once
+    pollInterval  = res.interval;
+    pollEffective = res.interval;
+    pollBackoff   = false;
+    backoffRow.hidden = true;
     intervalHint.textContent =
       `Checking Claude.ai every ${describePoll(res.interval)}. Minimum 1 minute to avoid rate limits.`;
     // reflect server poll cadence in the sidebar status text
